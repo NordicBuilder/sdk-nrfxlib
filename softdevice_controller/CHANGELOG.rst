@@ -9,6 +9,16 @@ Changelog
 
 All notable changes to this project are documented in this file.
 
+Master branch
+*************
+
+Bug fixes
+=========
+
+* Fixed an issue where the scanner did not check that the scan window was smaller than the scan interval (DRGN-15586).
+* Fixed an issue where the channel map provided by the LE Host Set Channel Classification HCI command was not always applied on the secondary advertising channels (DRGN-15695).
+
+
 nRF Connect SDK v1.6.0
 **********************
 
