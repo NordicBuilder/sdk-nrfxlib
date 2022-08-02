@@ -180,8 +180,10 @@ typedef struct
 
     bool missing_receive_buffer; ///!< If trx entered receive state without receive buffer
 
+    bool ccastarted_notif_en;
+
 #if NRF_802154_TX_STARTED_NOTIFY_ENABLED
-    bool tx_started;             ///< If the requested transmission has started.
+    bool tx_started; ///< If the requested transmission has started.
 
 #endif  // NRF_802154_TX_STARTED_NOTIFY_ENABLED
 
@@ -910,6 +912,7 @@ bool nrf_802154_trx_receive_buffer_set(void * p_receive_buffer)
 }
 
 void nrf_802154_trx_receive_frame(uint8_t                                bcc,
+                                  trx_ramp_up_trigger_mode_t             rampup_trigg_mode,
                                   nrf_802154_trx_receive_notifications_t notifications_mask,
                                   const nrf_802154_tx_power_split_t    * p_ack_tx_power)
 {
@@ -966,6 +969,12 @@ void nrf_802154_trx_receive_frame(uint8_t                                bcc,
 #endif // !NRF_802154_DISABLE_BCC_MATCHING
     nrf_radio_event_clear(NRF_RADIO, NRF_RADIO_EVENT_CRCOK);
     ints_to_enable |= NRF_RADIO_INT_CRCOK_MASK;
+
+    if (rampup_trigg_mode == TRX_RAMP_UP_HW_TRIGGER)
+    {
+        nrf_radio_event_clear(NRF_RADIO, NRF_RADIO_EVENT_READY);
+        ints_to_enable |= NRF_RADIO_INT_READY_MASK;
+    }
 
     if ((notifications_mask & TRX_RECEIVE_NOTIFICATION_STARTED) != 0U)
     {
@@ -1037,9 +1046,12 @@ void nrf_802154_trx_receive_frame(uint8_t                                bcc,
 #if NRF_802154_DISABLE_BCC_MATCHING
 #error Configuration unsupported anymore
 #endif // NRF_802154_DISABLE_BCC_MATCHING
-    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, true);
+    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, rampup_trigg_mode, true);
 
-    trigger_disable_to_start_rampup();
+    if (rampup_trigg_mode == TRX_RAMP_UP_SW_TRIGGER)
+    {
+        trigger_disable_to_start_rampup();
+    }
 
     nrf_802154_log_function_exit(NRF_802154_LOG_VERBOSITY_LOW);
 }
@@ -1077,7 +1089,7 @@ void nrf_802154_trx_receive_ack(void)
 
     fem_for_lna_set();
     nrf_802154_trx_antenna_update();
-    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, false);
+    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, TRX_RAMP_UP_SW_TRIGGER, false);
 
     trigger_disable_to_start_rampup();
 
@@ -1144,6 +1156,7 @@ bool nrf_802154_trx_rssi_sample_is_available(void)
 }
 
 void nrf_802154_trx_transmit_frame(const void                            * p_transmit_buffer,
+                                   trx_ramp_up_trigger_mode_t              rampup_trigg_mode,
                                    bool                                    cca,
                                    const nrf_802154_tx_power_split_t     * p_tx_power,
                                    nrf_802154_trx_transmit_notifications_t notifications_mask)
@@ -1157,6 +1170,8 @@ void nrf_802154_trx_transmit_frame(const void                            * p_tra
 
     m_trx_state         = TRX_STATE_TXFRAME;
     m_transmit_with_cca = cca;
+
+    m_flags.ccastarted_notif_en = false;
 
     nrf_radio_txpower_set(NRF_RADIO, p_tx_power->radio_tx_power);
 
@@ -1176,6 +1191,12 @@ void nrf_802154_trx_transmit_frame(const void                            * p_tra
     nrf_radio_event_clear(NRF_RADIO, NRF_RADIO_EVENT_PHYEND);
     ints_to_enable |= NRF_RADIO_INT_PHYEND_MASK;
 
+    if (rampup_trigg_mode == TRX_RAMP_UP_HW_TRIGGER)
+    {
+        nrf_radio_event_clear(NRF_RADIO, NRF_RADIO_EVENT_READY);
+        ints_to_enable |= NRF_RADIO_INT_READY_MASK;
+    }
+
     if (cca)
     {
         nrf_radio_event_clear(NRF_RADIO, NRF_RADIO_EVENT_CCABUSY);
@@ -1191,7 +1212,8 @@ void nrf_802154_trx_transmit_frame(const void                            * p_tra
         if ((notifications_mask & TRX_TRANSMIT_NOTIFICATION_CCASTARTED) != 0U)
         {
             nrf_radio_event_clear(NRF_RADIO, NRF_RADIO_EVENT_READY);
-            ints_to_enable |= NRF_RADIO_INT_READY_MASK;
+            ints_to_enable             |= NRF_RADIO_INT_READY_MASK;
+            m_flags.ccastarted_notif_en = true;
         }
     }
 
@@ -1205,9 +1227,14 @@ void nrf_802154_trx_transmit_frame(const void                            * p_tra
 
     fem_for_tx_set(cca, p_tx_power->fem_gain);
     nrf_802154_trx_antenna_update();
-    nrf_802154_trx_ppi_for_ramp_up_set(cca ? NRF_RADIO_TASK_RXEN : NRF_RADIO_TASK_TXEN, false);
+    nrf_802154_trx_ppi_for_ramp_up_set(cca ? NRF_RADIO_TASK_RXEN : NRF_RADIO_TASK_TXEN,
+                                       rampup_trigg_mode,
+                                       false);
 
-    trigger_disable_to_start_rampup();
+    if (rampup_trigg_mode == TRX_RAMP_UP_SW_TRIGGER)
+    {
+        trigger_disable_to_start_rampup();
+    }
 
     nrf_802154_log_function_exit(NRF_802154_LOG_VERBOSITY_LOW);
 }
@@ -1411,7 +1438,9 @@ static void rxframe_finish_disable_ints(void)
 {
     nrf_802154_log_function_enter(NRF_802154_LOG_VERBOSITY_HIGH);
 
-    uint32_t ints_to_disable = NRF_RADIO_INT_CRCOK_MASK | NRF_RADIO_INT_ADDRESS_MASK;
+    uint32_t ints_to_disable = NRF_RADIO_INT_READY_MASK |
+                               NRF_RADIO_INT_ADDRESS_MASK |
+                               NRF_RADIO_INT_CRCOK_MASK;
 
 #if !NRF_802154_DISABLE_BCC_MATCHING || NRF_802154_NOTIFY_CRCERROR
     ints_to_disable |= NRF_RADIO_INT_CRCERROR_MASK;
@@ -1551,6 +1580,11 @@ void nrf_802154_trx_abort(void)
 trx_state_t nrf_802154_trx_state_get(void)
 {
     return m_trx_state;
+}
+
+uint32_t nrf_802154_trx_ramp_up_ppi_channel_get(void)
+{
+    return nrf_802154_trx_ppi_for_ramp_up_channel_id_get();
 }
 
 static void go_idle_from_state_finished(void)
@@ -1737,7 +1771,7 @@ void nrf_802154_trx_standalone_cca(void)
     nrf_802154_trx_antenna_update();
 
     // Set PPIs
-    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, false);
+    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, TRX_RAMP_UP_SW_TRIGGER, false);
 
     trigger_disable_to_start_rampup();
 
@@ -1793,7 +1827,7 @@ void nrf_802154_trx_continuous_carrier(const nrf_802154_tx_power_split_t * p_tx_
     nrf_802154_trx_antenna_update();
 
     // Set PPIs
-    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_TXEN, false);
+    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_TXEN, TRX_RAMP_UP_SW_TRIGGER, false);
 
     trigger_disable_to_start_rampup();
 
@@ -1856,7 +1890,7 @@ void nrf_802154_trx_modulated_carrier(const void                        * p_tran
     nrf_802154_trx_antenna_update();
 
     // Set PPIs
-    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_TXEN, false);
+    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_TXEN, TRX_RAMP_UP_SW_TRIGGER, false);
 
     trigger_disable_to_start_rampup();
 
@@ -1925,7 +1959,7 @@ void nrf_802154_trx_energy_detection(uint32_t ed_count)
     nrf_802154_trx_antenna_update();
 
     // Set PPIs
-    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, false);
+    nrf_802154_trx_ppi_for_ramp_up_set(NRF_RADIO_TASK_RXEN, TRX_RAMP_UP_SW_TRIGGER, false);
 
     trigger_disable_to_start_rampup();
 
@@ -1962,11 +1996,25 @@ static void irq_handler_ready(void)
 {
     nrf_802154_log_function_enter(NRF_802154_LOG_VERBOSITY_LOW);
 
-    assert(m_trx_state == TRX_STATE_TXFRAME);
-
     nrf_radio_int_disable(NRF_RADIO, NRF_RADIO_INT_READY_MASK);
 
-    nrf_802154_trx_transmit_frame_ccastarted();
+    nrf_802154_trx_ppi_for_ramp_up_reconfigure();
+
+    switch (m_trx_state)
+    {
+        case TRX_STATE_TXFRAME:
+            if (m_flags.ccastarted_notif_en)
+            {
+                nrf_802154_trx_transmit_frame_ccastarted();
+            }
+            break;
+
+        case TRX_STATE_RXFRAME:
+            break;
+
+        default:
+            assert(false);
+    }
 
     nrf_802154_log_function_exit(NRF_802154_LOG_VERBOSITY_LOW);
 }
