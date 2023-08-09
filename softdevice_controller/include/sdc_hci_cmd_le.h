@@ -733,8 +733,8 @@ typedef __PACKED_STRUCT
 {
     uint8_t adv_handle;
     uint16_t adv_event_properties;
-    uint8_t primary_adv_interval_min[3];
-    uint8_t primary_adv_interval_max[3];
+    uint32_t primary_adv_interval_min : 24;
+    uint32_t primary_adv_interval_max : 24;
     uint8_t primary_adv_channel_map;
     uint8_t own_address_type;
     uint8_t peer_address_type;
